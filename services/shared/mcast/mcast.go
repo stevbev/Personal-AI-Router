@@ -18,12 +18,14 @@
 // telemetry (which the netpick address ranker consumes); the mDNS responder uses
 // the indices directly. It is a leaf: it depends only on the standard library and
 // the ipv4 helpers, and takes its interface set from the caller (typically
-// netmon.Enumerate) rather than enumerating on its own.
+// netmon.Enumerate) rather than enumerating on its own. It skips the AirDrop and
+// internal low-latency links (see excludedIface), which never reach the LAN.
 package mcast
 
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"golang.org/x/net/ipv4"
@@ -33,6 +35,19 @@ import (
 // matches the value the per-send code this replaces used, so a routed-VLAN or
 // multi-hop-LAN deployment sees the same on-link range as before.
 const ttl = 255
+
+// excludedIface reports whether an interface is one we never send mDNS on: an
+// Apple AirDrop / P2P link (awdl*) or an internal low-latency link (llw*). These
+// never reach the LAN or a VPN, so a socket and a per-send flow for them is pure
+// waste — and on a host whose packet filter inspects each new flow it is part of
+// the very churn this pool exists to remove. They usually carry no routable
+// address (so the caller's non-loopback-IPv4 filter already drops them), but a
+// host that assigns one a link-local IPv4 would otherwise advertise and transmit
+// on it. Real NICs (en*) and LAN/VPN interfaces (bridge*, utun*) are kept.
+func excludedIface(name string) bool {
+	n := strings.ToLower(name)
+	return strings.HasPrefix(n, "awdl") || strings.HasPrefix(n, "llw")
+}
 
 // sendSocket is one interface's long-lived send socket plus the facts the pool
 // needs to decide whether to reuse or rebuild it on a refresh.
@@ -77,13 +92,17 @@ func (s *Sender) refresh(ifaces map[int][]net.IP) {
 		}
 		src := addrs[0]
 		if old, ok := s.conns[idx]; ok && old.src.Equal(src) {
-			next[idx] = old
+			next[idx] = old // reuse; validated (non-excluded) when first bound
 			continue
+		}
+		ifi, err := net.InterfaceByIndex(idx)
+		if err != nil || excludedIface(ifi.Name) {
+			continue // gone, or an AirDrop/internal link we never send mDNS on
 		}
 		if old, ok := s.conns[idx]; ok {
 			_ = old.conn.Close()
 		}
-		ss, err := dial(src, idx)
+		ss, err := dial(src, ifi)
 		if err != nil {
 			continue
 		}
@@ -100,17 +119,15 @@ func (s *Sender) refresh(ifaces map[int][]net.IP) {
 // dial opens a send socket bound to src on an ephemeral port with the multicast
 // egress interface and TTL set — the same socket the per-send code used to open
 // on every transmission, now held for reuse.
-func dial(src net.IP, ifIndex int) (*sendSocket, error) {
+func dial(src net.IP, ifi *net.Interface) (*sendSocket, error) {
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: src, Port: 0})
 	if err != nil {
 		return nil, fmt.Errorf("mcast: bind %s: %w", src, err)
 	}
 	ss := &sendSocket{src: src, conn: conn}
-	if ifi, err := net.InterfaceByIndex(ifIndex); err == nil {
-		pc := ipv4.NewPacketConn(conn)
-		_ = pc.SetMulticastInterface(ifi)
-		_ = pc.SetMulticastTTL(ttl)
-	}
+	pc := ipv4.NewPacketConn(conn)
+	_ = pc.SetMulticastInterface(ifi)
+	_ = pc.SetMulticastTTL(ttl)
 	return ss, nil
 }
 

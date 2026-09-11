@@ -51,8 +51,25 @@ func TestSenderBuildsOneSocketPerInterface(t *testing.T) {
 	}
 	s := New(ifaces)
 	defer s.Close()
-	if got := len(s.Ifaces()); got != len(ifaces) {
-		t.Fatalf("Sender.Ifaces() = %d, want %d (one long-lived socket per interface)", got, len(ifaces))
+	held := map[int]bool{}
+	for _, idx := range s.Ifaces() {
+		held[idx] = true
+	}
+	// At most one socket per enumerated interface; the AirDrop/internal-link
+	// filter and any bind failure can only shrink the pool, never grow it.
+	if len(held) > len(ifaces) {
+		t.Fatalf("Sender holds %d sockets for %d interfaces; want at most one each", len(held), len(ifaces))
+	}
+	// No socket for an excluded (AirDrop/internal) interface, even when the caller
+	// reported an address for it.
+	for idx := range ifaces {
+		ifi, err := net.InterfaceByIndex(idx)
+		if err != nil {
+			continue
+		}
+		if excludedIface(ifi.Name) && held[idx] {
+			t.Errorf("Sender holds a socket for excluded interface %s (%d)", ifi.Name, idx)
+		}
 	}
 }
 
@@ -85,8 +102,26 @@ func TestSenderSendMulticastReturnsPerIfaceOutcomes(t *testing.T) {
 	s := New(ifaces)
 	defer s.Close()
 	target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
-	if got := s.SendMulticast([]byte{0}, target, s.Ifaces()); len(got) != len(ifaces) {
-		t.Fatalf("SendMulticast returned %d outcomes, want %d (one per requested interface)", len(got), len(ifaces))
+	if got := s.SendMulticast([]byte{0}, target, s.Ifaces()); len(got) != len(s.Ifaces()) {
+		t.Fatalf("SendMulticast returned %d outcomes, want %d (one per pooled interface)", len(got), len(s.Ifaces()))
+	}
+}
+
+// TestExcludedIfaceKeepsLanAndVpn pins the pruning policy: AirDrop (awdl*) and
+// internal low-latency (llw*) links are dropped, while real NICs and the LAN/VPN
+// interfaces the cluster transport depends on (en*, bridge*, utun*) are kept.
+func TestExcludedIfaceKeepsLanAndVpn(t *testing.T) {
+	cases := map[string]bool{
+		"awdl0": true, "awdl1": true, // AirDrop P2P
+		"llw0":  true, "llw1":  true, // internal low-latency link
+		"en0":   false, "en5":  false, // real NICs
+		"bridge0":   false,
+		"utun0": false, "utun3": false, // VPN must survive (LAN+VPN constraint)
+	}
+	for name, want := range cases {
+		if got := excludedIface(name); got != want {
+			t.Errorf("excludedIface(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 
