@@ -576,10 +576,14 @@ func (b *Browser) browse(ctx context.Context) map[string]Node {
 	// wildcard 224.0.0.0:5353. Windows refuses to send from a socket whose local
 	// address is a multicast group, so the library's outgoing PTR query is
 	// silently dropped there (the WriteTo error is swallowed inside zeroconf).
-	// We re-send the query from a per-interface unicast-bound socket, which
-	// Windows delivers; receive works fine on Windows (joined sockets receive
-	// multicast regardless of local binding), so we keep zeroconf for that.
-	b.recordSendOutcomes(sendMulticastQuery(b.service, b.domain))
+	// Only Windows needs the re-send; on every other platform zeroconf's own
+	// socket transmits fine, and a redundant second copy of the same query from a
+	// per-interface unicast-bound socket only doubles the multicast traffic.
+	// Receive works the same everywhere (joined sockets receive multicast
+	// regardless of local binding), so zeroconf is kept for that.
+	if retransmitWorkaround() {
+		b.recordSendOutcomes(sendMulticastQuery(b.service, b.domain))
+	}
 	<-scanCtx.Done()
 	<-done
 
