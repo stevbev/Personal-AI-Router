@@ -44,9 +44,10 @@ import (
 	"sync"
 	"time"
 
+	"nvpair-shared/mcast"
+
 	"github.com/grandcat/zeroconf"
 	"github.com/miekg/dns"
-	"golang.org/x/net/ipv4"
 )
 
 // Event types emitted by Run.
@@ -215,6 +216,13 @@ type Browser struct {
 	// every scan, and treating an isolated blip as evidence would let address
 	// selection move a host's canonical address for no reason.
 	sendMisses map[string]int
+
+	// sender is the long-lived per-interface send-socket pool the Windows
+	// workaround re-send draws from (see retransmitQuery). It is created lazily on
+	// the first retransmit — so a non-Windows browser, which never re-sends, holds
+	// no sockets — and refreshed only when the host's interface set changes.
+	// Guarded by mu alongside the map it feeds.
+	sender *mcast.Sender
 
 	// browseFunc performs one browse cycle and returns the seen set keyed the
 	// same way as the node map. Defaults to the real zeroconf browse; overridden
@@ -582,7 +590,7 @@ func (b *Browser) browse(ctx context.Context) map[string]Node {
 	// Receive works the same everywhere (joined sockets receive multicast
 	// regardless of local binding), so zeroconf is kept for that.
 	if retransmitWorkaround() {
-		b.recordSendOutcomes(sendMulticastQuery(b.service, b.domain))
+		b.recordSendOutcomes(b.retransmitQuery())
 	}
 	<-scanCtx.Done()
 	<-done
@@ -590,42 +598,18 @@ func (b *Browser) browse(ctx context.Context) map[string]Node {
 	return seen
 }
 
-// sendMulticastQuery emits a single mDNS PTR query for `<service>.<domain>.` on
-// every up, multicast-capable, non-loopback IPv4 interface. Per-interface
-// failures are logged at DEBUG and ignored for the query's purpose — one
-// successful send is enough to discover the LAN.
-//
-// It returns each attempted interface's outcome keyed by name, because a send
-// that fails at the socket is also the cheapest evidence available that the
-// kernel has no usable route out of that interface. Address selection consumes
-// it (see Browser.SendFailures) rather than paying for a probe of its own.
-func sendMulticastQuery(service, domain string) map[string]bool {
-	outcomes := make(map[string]bool)
-	msg := new(dns.Msg)
-	qname := fmt.Sprintf("%s.%s.", strings.Trim(service, "."), strings.Trim(domain, "."))
-	msg.SetQuestion(qname, dns.TypePTR)
-	msg.RecursionDesired = false
-	buf, err := msg.Pack()
-	if err != nil {
-		slog.Warn("mdns send: pack query failed", "service", service, "err", err)
-		return outcomes
-	}
-
-	target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
-
+// enumerateIfaces returns the host's up, multicast-capable, non-loopback IPv4
+// interfaces as an index->addresses map (the set mcast.Sender draws its pool
+// from) alongside an index->name map (for reporting outcomes by the name that
+// SendFailures and address selection key on). An interface the kernel reports no
+// usable address for is omitted, exactly as the per-send path this replaces did.
+func enumerateIfaces() (map[int][]net.IP, map[int]string) {
+	v4 := make(map[int][]net.IP)
+	names := make(map[int]string)
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		slog.Warn("mdns send: enumerate interfaces failed", "err", err)
-		return outcomes
+		return v4, names
 	}
-
-	var sent int
-	// Why each interface could not carry the query, for the warning below. The
-	// count on its own cannot separate a host with no usable interface from one
-	// whose sockets are being refused, and the errors that draw that distinction
-	// were DEBUG only — below the level the app ships with, so every field report
-	// of this warning has arrived without the one fact that explains it.
-	var failures []string
 	for _, ifi := range ifaces {
 		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagMulticast == 0 || ifi.Flags&net.FlagLoopback != 0 {
 			continue
@@ -634,55 +618,89 @@ func sendMulticastQuery(service, domain string) map[string]bool {
 		if err != nil {
 			continue
 		}
-		var src net.IP
+		var ips []net.IP
 		for _, a := range addrs {
 			ipnet, ok := a.(*net.IPNet)
 			if !ok {
 				continue
 			}
-			if ip4 := ipnet.IP.To4(); ip4 != nil {
-				src = ip4
-				break
+			if ip4 := ipnet.IP.To4(); ip4 != nil && !ip4.IsLoopback() {
+				ips = append(ips, ip4)
 			}
 		}
-		if src == nil {
+		if len(ips) == 0 {
 			continue
 		}
+		v4[ifi.Index] = ips
+		names[ifi.Index] = ifi.Name
+	}
+	return v4, names
+}
 
-		ifi := ifi
-		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: src, Port: 0})
-		if err != nil {
-			slog.Debug("mdns send: bind failed", "iface", ifi.Name, "ip", src.String(), "err", err)
-			outcomes[ifi.Name] = false
-			failures = append(failures, fmt.Sprintf("%s bind: %v", ifi.Name, err))
+// retransmitQuery is the Windows workaround's send path (see browse): it re-sends
+// the browse PTR query from the browser's long-lived per-interface send-socket
+// pool instead of opening a fresh socket per interface per scan. The pool holds
+// one socket per interface and reuses it, so an OS packet filter that inspects
+// each new flow (the macOS Application Firewall, where this matters most) keeps
+// a stable flow across scans rather than re-evaluating a fresh one. It is created
+// on first use and refreshed only when the host's interface set changes, so a
+// steady-state scan causes no socket churn.
+//
+// It returns each attempted interface's outcome keyed by name (as the per-send
+// path it replaced did) for recordSendOutcomes / SendFailures. A send that fails
+// at the socket is also the cheapest evidence available that the kernel has no
+// usable route out of that interface, which is why address selection consumes it.
+func (b *Browser) retransmitQuery() map[string]bool {
+	v4, names := enumerateIfaces()
+
+	b.mu.Lock()
+	if b.sender == nil {
+		b.sender = mcast.New(v4)
+	} else {
+		b.sender.Refresh(v4)
+	}
+	sender := b.sender
+	b.mu.Unlock()
+
+	msg := new(dns.Msg)
+	qname := fmt.Sprintf("%s.%s.", strings.Trim(b.service, "."), strings.Trim(b.domain, "."))
+	msg.SetQuestion(qname, dns.TypePTR)
+	msg.RecursionDesired = false
+	buf, err := msg.Pack()
+	if err != nil {
+		slog.Warn("mdns send: pack query failed", "service", b.service, "err", err)
+		return nil
+	}
+
+	target := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
+	outcomes := sender.SendMulticast(buf, target, sender.Ifaces())
+
+	named := make(map[string]bool, len(outcomes))
+	var sent int
+	var dark []string
+	for idx, ok := range outcomes {
+		name, known := names[idx]
+		if !known {
 			continue
 		}
-		pc := ipv4.NewPacketConn(conn)
-		if err := pc.SetMulticastInterface(&ifi); err != nil {
-			slog.Debug("mdns send: SetMulticastInterface failed", "iface", ifi.Name, "err", err)
-		}
-		_ = pc.SetMulticastTTL(255)
-		if _, err := conn.WriteToUDP(buf, target); err != nil {
-			slog.Debug("mdns send: write failed", "iface", ifi.Name, "ip", src.String(), "err", err)
-			outcomes[ifi.Name] = false
-			failures = append(failures, fmt.Sprintf("%s write: %v", ifi.Name, err))
-		} else {
-			slog.Debug("mdns send: query sent", "service", service, "iface", ifi.Name, "ip", src.String())
-			outcomes[ifi.Name] = true
+		named[name] = ok
+		if ok {
 			sent++
+		} else {
+			dark = append(dark, name)
 		}
-		_ = conn.Close()
 	}
 
 	if sent == 0 {
-		// A zero `failed` here means no interface even qualified to be asked,
-		// which is a different fault from one whose sockets were refused.
+		// `attempted` 0 means no interface even qualified to be asked, which is a
+		// different fault from interfaces present but whose sockets were refused;
+		// `dark` lists the latter by name.
 		slog.Warn("mdns send: query did not leave any interface",
-			"service", service,
-			"failed", len(failures),
-			"errors", strings.Join(failures, "; "))
+			"service", b.service,
+			"attempted", len(outcomes),
+			"dark", strings.Join(dark, ","))
 	}
-	return outcomes
+	return named
 }
 
 // UUIDFromTXT returns the value of the "uuid=" TXT record, or "" if absent. It's
