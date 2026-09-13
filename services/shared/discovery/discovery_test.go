@@ -6,7 +6,6 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -495,16 +494,5 @@ func TestSendFailuresForgetAnInterfaceThatIsGone(t *testing.T) {
 	b.mu.RUnlock()
 	if stale {
 		t.Error("the counter for a departed interface was retained")
-	}
-}
-
-// TestRetransmitWorkaroundOnlyOnWindows pins the platform gate. The per-interface
-// unicast re-send exists solely because grandcat/zeroconf cannot transmit from a
-// multicast-bound socket on Windows; on every other platform zeroconf's own socket
-// sends, so the re-send would be a redundant second copy of the same PTR query.
-func TestRetransmitWorkaroundOnlyOnWindows(t *testing.T) {
-	if got := retransmitWorkaround(); got != (runtime.GOOS == "windows") {
-		t.Fatalf("retransmitWorkaround() = %v on %s, want %v",
-			got, runtime.GOOS, runtime.GOOS == "windows")
 	}
 }

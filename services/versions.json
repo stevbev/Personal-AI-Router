@@ -3,17 +3,17 @@
   "product": "0.91.8",
   "installer": "0.91.8",
   "components": {
-    "ollama-proxy": "0.26.5",
-    "lmstudio-proxy": "0.16.5",
+    "ollama-proxy": "0.26.6",
+    "lmstudio-proxy": "0.16.6",
     "nvpair-node-info": "0.13.3",
-    "nvpair-node-scanner": "0.20.7",
+    "nvpair-node-scanner": "0.20.8",
     "nvpair-manual-nodes": "0.11.1",
     "nvpair-workload-manager": "0.13.3",
-    "nvpair-errors": "0.7.7",
+    "nvpair-errors": "0.7.8",
     "nvpair-node-settings": "1.0.4",
     "nvpair-ui-broker": "0.40.2",
     "nvpair-engine-manager": "0.17.4",
-    "nvpair-cluster-manager": "1.1.7",
+    "nvpair-cluster-manager": "1.1.8",
     "nvpair-job-scheduler": "0.4.1",
     "nvpair-tui": "0.7.2"
   }
