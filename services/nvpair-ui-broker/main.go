@@ -36,6 +36,8 @@ func main() {
 	clusterMgrPath := flag.String("cluster-manager-path", "", "path to nvpair-cluster-manager binary (default: ./nvpair-cluster-manager in the current working directory)")
 	schedulerPath := flag.String("scheduler-path", "", "path to nvpair-job-scheduler binary (default: ./nvpair-job-scheduler in the current working directory)")
 	clusterDirFlag := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/) the broker passes to its mDNS workers (nvpair-errors, nvpair-workload-manager, nvpair-node-info, nvpair-node-scanner, nvpair-manual-nodes) to enable cluster-scoped inter-node mTLS; defaults to the per-user Nvidia Corporation/Personal AI Router cluster/ dir, where nvpair-cluster-manager mints them")
+	clusterRouter := flag.Bool("cluster-router", false, "start the proxy with the cluster routing endpoint already bound (one loopback port routing across every engine); spawn-time preference only: the endpoint can also be lifted at runtime over router/set-enabled. Prototype flag, a settings surface to follow")
+	clusterRouterPort := flag.Int("cluster-router-port", 0, "port for the cluster routing endpoint when --cluster-router is set (default 0: the proxy's own default); loopback-only regardless")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -246,18 +248,20 @@ func main() {
 
 	codec := NewCodec(transport)
 	paths := workerPaths{
-		scanner:      resolvedScanner,
-		nodeInfo:     resolvedNodeInfo,
-		proxy:        resolvedProxy,
-		proxyEngines: selectedEngines,
-		workloadMgr:  resolvedWorkloadMgr,
-		errors:       resolvedErrors,
-		engineMgr:    resolvedEngineMgr,
-		manualNodes:  resolvedManualNodes,
-		settings:     resolvedSettings,
-		clusterMgr:   resolvedClusterMgr,
-		scheduler:    resolvedScheduler,
-		clusterDir:   clusterDir,
+		scanner:           resolvedScanner,
+		nodeInfo:          resolvedNodeInfo,
+		proxy:             resolvedProxy,
+		proxyEngines:      selectedEngines,
+		workloadMgr:       resolvedWorkloadMgr,
+		errors:            resolvedErrors,
+		engineMgr:         resolvedEngineMgr,
+		manualNodes:       resolvedManualNodes,
+		settings:          resolvedSettings,
+		clusterMgr:        resolvedClusterMgr,
+		scheduler:         resolvedScheduler,
+		clusterDir:        clusterDir,
+		clusterRouter:     *clusterRouter,
+		clusterRouterPort: *clusterRouterPort,
 	}
 	if err := NewBroker(codec, paths).Serve(ctx); err != nil && ctx.Err() == nil {
 		fatalf("broker error: %v", err)
