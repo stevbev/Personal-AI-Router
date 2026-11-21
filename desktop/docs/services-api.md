@@ -38,6 +38,7 @@
 - ⚠️ nvpair-node-settings → settings/get-force-ports
 - ⚠️ nvpair-node-settings → settings/set-cluster-auto-sync
 - ⚠️ nvpair-node-settings → settings/set-force-ports
+- ⚠️ nvpair-proxy → cluster/set-aliases
 - ⚠️ nvpair-proxy → facade/enable
 - ⚠️ nvpair-proxy → node/selected
 - ⚠️ nvpair-proxy → node/set-local-backend
@@ -190,14 +191,17 @@
 |---|---|---|
 | `connection/cluster-auto-sync` | notification (we consume) | ➖ ignored |
 | `connection/cluster-identity` | notification (we consume) | ✅ yes |
+| `connection/cluster-model-aliases` | notification (we consume) | ➖ ignored |
 | `ready` | notification (we consume) | ✅ yes |
 | `settings/get-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/get-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/get-cluster-id` | request (we call) | ✅ yes |
+| `settings/get-cluster-model-aliases` | request (we call) | ✅ yes |
 | `settings/get-force-ports` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/set-cluster-id` | request (we call) | ✅ yes |
+| `settings/set-cluster-model-aliases` | request (we call) | ➖ ignored |
 | `settings/set-force-ports` | request (we call) | ⚠️ not called |
 
 ## nvpair-proxy
@@ -214,6 +218,7 @@
 | `proxy/request` | notification (we consume) | ✅ yes |
 | `proxy/request-started` | notification (we consume) | ➖ ignored |
 | `ready` | notification (we consume) | ✅ yes |
+| `cluster/set-aliases` | request (we call) | ⚠️ not called |
 | `facade/enable` | request (we call) | ⚠️ not called |
 | `node/add-manual` | request (we call) | ✅ yes |
 | `node/remove-manual` | request (we call) | ✅ yes |
@@ -223,6 +228,9 @@
 | `node/set-local-models` | request (we call) | ⚠️ not called |
 | `node/set-priority` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
+| `router/get-aliases` | request (we call) | ✅ yes |
+| `router/set-enabled` | request (we call) | ✅ yes |
+| `router/status` | request (we call) | ✅ yes |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
 - `method (var)  (proxy.go)`
@@ -264,9 +272,11 @@
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `errors:update` | notification (we consume) | ✅ yes |
+| `node/model-aliases` | notification (we consume) | ➖ ignored |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 | `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
 | `connection/cluster-identity` | request (we call) | ✅ yes |
+| `connection/cluster-model-aliases` | request (we call) | ➖ ignored |
 | `discovery:get-nodes` | request (we call) | ✅ yes |
 | `discovery:subscribe` | request (we call) | ✅ yes |
 | `discovery:unsubscribe` | request (we call) | ⚠️ not called |
@@ -291,13 +301,16 @@
 | `node/updated` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
 | `ready` | request (we call) | ✅ yes |
+| `router/get-aliases` | request (we call) | ✅ yes |
+| `router/set-enabled` | request (we call) | ✅ yes |
+| `router/status` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:subscribe` | request (we call) | ✅ yes |
 | `workloads:unsubscribe` | request (we call) | ⚠️ not called |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (broker.go, 5 sites)`
+- `method (var)  (broker.go, 6 sites)`
 - `method (var)  (clustermanager.go)`
 - `method (var)  (errors.go)`
 - `target (var)  (modelrequest.go)`
@@ -311,4 +324,8 @@
 | `ready` | notification (we consume) | ✅ yes |
 | `workloads:remove` | notification (we consume) | ✅ yes |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
+
+**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
+- `MethodApplyAliases (var)  (aliaseswrite.go)`
+- `MethodPeerAliasesResult (var)  (aliaseswrite.go)`
 
